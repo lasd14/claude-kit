@@ -715,16 +715,39 @@ const MINI: Record<string, { hat: string[]; dots?: [number, number, string][]; m
   explore: { hat: ['.KKKKKKc', '..gggg.c'], dots: [[4, 2, 'K'], [7, 2, 'h']], map: { K: '#55514C', g: '#F5C542', c: '#C9CCD2', h: '#7A4A26' } },
 }
 
+// Shell colors for crabs that share a costume: the first keeps the classic clay,
+// each next one of the same costume takes the next color. Past the list the eyes
+// turn light, so twenty crabs of one costume still differ.
+const SHELLS = ['#D97757', '#E0524D', '#9B6BD6', '#3FB6A8', '#6DBE5A', '#E3B341', '#E77FB3', '#8A93A6', '#A0603A', '#8FD9B6']
+const LIGHT_EYES = '#F4F3EE'
+
+// Each agent's variant: how many agents of its costume started before it.
+export const variantsOf = (list: AgentRun[]): Map<string, number> => {
+  const seen = new Map<string, number>()
+  const out = new Map<string, number>()
+  for (const a of [...list].sort((x, y) => x.startedAt - y.startedAt)) {
+    const c = termCostume(a.type, a.model)
+    const n = seen.get(c) ?? 0
+    out.set(a.id, n)
+    seen.set(c, n + 1)
+  }
+  return out
+}
+
 // A finished crab fades halfway toward grey.
 const fade = (c: string): string =>
   '#' + [1, 3, 5].map(i => Math.round((parseInt(c.slice(i, i + 2), 16) + 0x88) / 2).toString(16).padStart(2, '0')).join('')
 
 // `step` 0 stands, 1 and 2 are the two walking frames.
-export const crabPixels = (costume: string, step: 0 | 1 | 2): (string | null)[][] => {
+export const crabPixels = (costume: string, step: 0 | 1 | 2, variant = 0): (string | null)[][] => {
   const look = MINI[costume] ?? MINI.other!
-  const map: Record<string, string> = { C: CLAY, K: INK, t: colorOf(costume), ...look.map }
+  const v = Math.max(0, Math.floor(variant)) % (SHELLS.length * 2)
+  const shell = SHELLS[v % SHELLS.length] ?? CLAY
+  const eyes = v >= SHELLS.length ? LIGHT_EYES : INK
+  // The pirate's hat and patch use K too: only the eyes in the body change.
+  const map: Record<string, string> = { C: shell, K: INK, t: colorOf(costume), ...look.map }
   const rows = [...look.hat, ...MINI_BODY, MINI_LEGS[step === 2 ? 1 : 0]!]
-  const px = rows.map(r => [...r].map(ch => map[ch] ?? null))
+  const px = rows.map((r, y) => [...r].map(ch => (ch === 'K' && y === look.hat.length ? eyes : (map[ch] ?? null))))
   for (const [x, y, k] of look.dots ?? []) {
     const r = px[y]
     if (r) r[x] = map[k] ?? null
@@ -733,8 +756,8 @@ export const crabPixels = (costume: string, step: 0 | 1 | 2): (string | null)[][
 }
 
 // One text row per two pixel rows: runs of the same colors, as [text, fg, bg].
-export const crabRows = (costume: string, step: 0 | 1 | 2, dim: boolean, mirror: boolean): [string, string?, string?][][] => {
-  const px = crabPixels(costume, step)
+export const crabRows = (costume: string, step: 0 | 1 | 2, dim: boolean, mirror: boolean, variant = 0): [string, string?, string?][][] => {
+  const px = crabPixels(costume, step, variant)
   const rows: [string, string?, string?][][] = []
   for (let y = 0; y < px.length; y += 2) {
     const top = px[y] ?? []
@@ -964,7 +987,7 @@ type TermUi = Pick<Elements['terminal'], 'Box' | 'Text'>
 
 // The terminal rows, shared by the agents pane and the all-agents pane.
 // `ui` is what `$.ui.resolve(e)` returned for this draw.
-const termKit = (ui: TermUi, bodyColumns: number, at: number) => {
+const termKit = (ui: TermUi, bodyColumns: number, at: number, variants: Map<string, number> = new Map()) => {
   const s = tr()
   const { Box, Text } = ui
   // Terminal: the desktop's layout in text, with a small pixel crab per row.
@@ -976,9 +999,9 @@ const termKit = (ui: TermUi, bodyColumns: number, at: number) => {
   const textW = Math.max(16, cols - 1 - (hasCrabs ? TERM_CRAB_COLS + 2 : 0))
   // Running crabs step their legs in turn with the once-a-second tick.
   const step: 1 | 2 = Math.floor(at / 1000) % 2 === 0 ? 1 : 2
-  const termCrab = (costume: string, pose: 0 | 1 | 2, dim: boolean) => (
+  const termCrab = (costume: string, pose: 0 | 1 | 2, dim: boolean, variant = 0) => (
     <Box flexDirection="column" flexShrink={0}>
-      {crabRows(costume, pose, dim, isRtl()).map((runs, y) => (
+      {crabRows(costume, pose, dim, isRtl(), variant).map((runs, y) => (
         <Text key={`r${y}`}>
           {runs.map(([text, fg, bg], i) => (
             <Text key={`c${i}`} color={fg} backgroundColor={bg}>
@@ -1045,7 +1068,7 @@ const termKit = (ui: TermUi, bodyColumns: number, at: number) => {
         {progress === null ? bar(ctx, undefined) : bar(progress * 100, color)}
       </Box>
     )
-    return withCrab(a.id, termCrab(costume, a.status === 'running' ? step : 0, false), body)
+    return withCrab(a.id, termCrab(costume, a.status === 'running' ? step : 0, false, variants.get(a.id) ?? 0), body)
   }
   const plannedRow = (pl: Planned) => {
     const tier = pl.tier in TIER_COLOR ? pl.tier : 'other'
@@ -1431,7 +1454,7 @@ export const register: Register = (on, options) => {
       )
     }
 
-    const { cols, dir, row, plannedRow, stat } = termKit(ui, e.props.bodyColumns, at)
+    const { cols, dir, row, plannedRow, stat } = termKit(ui, e.props.bodyColumns, at, variantsOf(list))
     return (
       <Box flexDirection="column" paddingX={1}>
         <Box flexDirection={dir} justifyContent="space-between">
@@ -1482,7 +1505,10 @@ export const register: Register = (on, options) => {
     const groups = groupSessions(list, at)
     const all = groups.flatMap(([, sessions]) => sessions.flatMap(x => x.agents))
     const t = totals(all, at)
-    const { cols, dir, row, stat } = termKit(ui, e.props.bodyColumns, at)
+    // Rows carry their session in the id, so two sessions' a1 stay apart.
+    const keyed = (x: SharedSession, a: AgentRun): AgentRun => ({ ...a, id: `${x.sessionId}:${a.id}` })
+    const variants = variantsOf(groups.flatMap(([, sessions]) => sessions.flatMap(x => x.agents.map(a => keyed(x, a)))))
+    const { cols, dir, row, stat } = termKit(ui, e.props.bodyColumns, at, variants)
     const sessionCount = groups.reduce((n, [, sessions]) => n + sessions.length, 0)
 
     return (
@@ -1522,7 +1548,7 @@ export const register: Register = (on, options) => {
                     {x.sessionId.slice(0, 8)} · {x.agents.length} {s.agentsCount}
                   </Text>
                 )}
-                {[...x.agents].sort((a, b) => b.startedAt - a.startedAt).map(a => row({ ...a, id: `${x.sessionId}:${a.id}` }))}
+                {[...x.agents].sort((a, b) => b.startedAt - a.startedAt).map(a => row(keyed(x, a)))}
               </Box>
             ))}
           </Box>

@@ -2,7 +2,8 @@ import type { On } from 'claude-code'
 import { expect, mock, test } from 'claude-code/testing'
 import type { Engine } from 'claude-code/testing'
 
-import { crabRows, termCostume, totals } from './register'
+import { crabPixels, crabRows, termCostume, totals, variantsOf } from './register'
+import type { AgentRun } from '../types'
 
 const PLUGIN = 'savvy-progress'
 const pane = (bodyColumns: number) =>
@@ -59,4 +60,17 @@ test('total time adds up each agent run, not the span from the first to now', as
   const at = 2 * hour + 30_000
   expect(totals([run(0, 60_000), run(hour, hour + 120_000), run(2 * hour)], at).time).toBe(60_000 + 120_000 + 30_000)
   expect(totals([], at).time).toBe(0)
+})
+
+test('crabs of one costume each get their own shell, the first keeps the classic', async () => {
+  const sonnet = (id: string, startedAt: number) =>
+    ({ id, type: 'general-purpose', model: 'claude-sonnet-5-5', startedAt }) as AgentRun
+  const haiku = { id: 'h', type: 'general-purpose', model: 'claude-haiku-5-5', startedAt: 5 } as AgentRun
+  const v = variantsOf([sonnet('b', 20), haiku, sonnet('a', 10), sonnet('c', 30)])
+  expect([v.get('a'), v.get('b'), v.get('c'), v.get('h')]).toEqual([0, 1, 2, 0])
+
+  const looks = new Set(Array.from({ length: 20 }, (_, i) => JSON.stringify(crabPixels('medium', 0, i))))
+  expect(looks.size).toBe(20)
+  // The hat stays: a Sonnet chef is still a chef in any shell.
+  expect(crabPixels('medium', 0, 7).slice(0, 2)).toEqual(crabPixels('medium', 0, 0).slice(0, 2))
 })
