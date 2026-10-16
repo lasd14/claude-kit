@@ -25,7 +25,7 @@ In Claude Code:
 /plugin install savvy-progress@lasd14-claude-kit
 ```
 
-Restart the session afterwards. Plugin skills and agents are namespaced: the skill is `/savvy-flow:savvy-flow`, the agents `savvy-flow:savvy-careful` and so on.
+Restart the session afterwards. If you had the original savvy-progress from JohnnyVizz/claude-kit, turn it off with `/plugin disable savvy-progress@claude-kit` so the two do not draw at once. Plugin skills and agents are namespaced: the skill is `/savvy-flow:savvy-flow`, the agents `savvy-flow:savvy-careful` and so on.
 
 ### By hand
 

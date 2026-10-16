@@ -8,6 +8,36 @@ A Claude Code mod: a progress bar above the prompt and a live panel of subagents
 - **Crab shells**: agents that share a costume (two Sonnet chefs, say) each get their own shell color, in the order they started; the first keeps the classic clay. Ten colors, then the same ten with light eyes.
 - **All agents** (`/agents-all` toggles it; `/agents-all open` opens it): every subagent running in any Claude Code session on this machine, grouped by project, with the same crab rows. Each session writes its running agents to `~/.claude/savvy-progress/sessions/<session id>.json` (or under `CLAUDE_CONFIG_DIR`); a session silent for 30 seconds drops out.
 
+## Install
+
+In Claude Code:
+
+```
+/plugin marketplace add lasd14/claude-kit
+/plugin install savvy-progress@lasd14-claude-kit
+```
+
+Or in one step, on Claude Code 2.1.275 or later:
+
+```
+/plugin install savvy-progress --marketplace lasd14/claude-kit
+```
+
+Restart the session afterwards. `/agents-info` opens the panel, `/agents-all` the one for every session.
+
+If you have the original from JohnnyVizz/claude-kit, turn it off so the two do not draw at once:
+
+```
+/plugin disable savvy-progress@claude-kit
+```
+
+To get a newer version:
+
+```
+claude plugin marketplace update lasd14-claude-kit
+claude plugin update savvy-progress@lasd14-claude-kit
+```
+
 ## Tools it adds
 
 - `mcp__savvy-progress__progress`: the orchestrator reports the plan, phase and accepted tasks. Only the main session can: a call from a subagent is ignored, so a worker cannot rename, finish or reset the flow.
