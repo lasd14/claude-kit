@@ -1,7 +1,7 @@
 import { atom, read, update } from 'claude-code'
-import type { EngineInterface, Register } from 'claude-code'
+import type { Elements, EngineInterface, Register } from 'claude-code'
 
-import type { AgentRun, Flow, Panel, Phase, PlannedTask } from '../types'
+import type { AgentRun, Flow, Panel, Phase, PlannedTask, SharedSession } from '../types'
 
 const flow = atom({ plugin: 'savvy-progress', key: 'flow' } as const, null)
 const agents = atom({ plugin: 'savvy-progress', key: 'agents' } as const, [])
@@ -11,6 +11,7 @@ const panel = atom({ plugin: 'savvy-progress', key: 'panel' } as const, {
   autoOpenedFor: '',
 })
 const now = atom({ plugin: 'savvy-progress', key: 'now' } as const, 0)
+const everyone = atom({ plugin: 'savvy-progress', key: 'everyone' } as const, [])
 
 const TOOL = 'mcp__savvy-progress__progress'
 const STEP_TOOL = 'mcp__savvy-progress__step'
@@ -21,6 +22,11 @@ const STEP_BRIEF = `
 
 Progress reporting: before any other work, call \`${STEP_TOOL}\` with \`total\` (your plan in 3-8 steps) and \`done: 0\`; call it again with \`done\` and a few-word \`note\` as each step finishes. It only draws a progress bar.`
 const PANE = 'savvy-agents'
+const GLOBAL_PANE = 'savvy-global'
+// A session that has not written for this long is gone (closed, or killed).
+const GLOBAL_STALE = 30_000
+// While agents run, a session rewrites its file at least this often.
+const GLOBAL_BEAT = 10_000
 const PHASES: readonly Phase[] = ['plan', 'design', 'delegate', 'review', 'close']
 const TIERS: readonly string[] = ['fable', 'heavy', 'careful', 'medium', 'light']
 // The tools' schemas are advice to the model, not a check: what a call may ask
@@ -49,6 +55,13 @@ type Lang = 'en' | 'ru' | 'he'
 const STRINGS = {
   en: {
     pane: 'Agents',
+    global: 'All agents',
+    globalEmpty: 'No agents running in any session.',
+    sessionsWord: 'sessions',
+    projects: 'Projects',
+    globalOpened: 'All-agents panel opened.',
+    globalClosed: 'All-agents panel closed.',
+    globalOff: 'All agents: cannot find the Claude config folder (HOME is not set).',
     cost: 'Cost',
     tokens: 'Tokens',
     time: 'Time',
@@ -80,6 +93,13 @@ const STRINGS = {
   },
   ru: {
     pane: 'Агенты',
+    global: 'Все агенты',
+    globalEmpty: 'Ни в одной сессии агенты не работают.',
+    sessionsWord: 'сессий',
+    projects: 'Проекты',
+    globalOpened: 'Панель всех агентов открыта.',
+    globalClosed: 'Панель всех агентов закрыта.',
+    globalOff: 'Все агенты: не найдена папка настроек Claude (HOME не задан).',
     cost: 'Стоимость',
     tokens: 'Токены',
     time: 'Время',
@@ -111,6 +131,13 @@ const STRINGS = {
   },
   he: {
     pane: 'סוכנים',
+    global: 'כל הסוכנים',
+    globalEmpty: 'אין סוכנים פעילים באף סשן.',
+    sessionsWord: 'סשנים',
+    projects: 'פרויקטים',
+    globalOpened: 'חלונית כל הסוכנים נפתחה.',
+    globalClosed: 'חלונית כל הסוכנים נסגרה.',
+    globalOff: 'כל הסוכנים: תיקיית ההגדרות של Claude לא נמצאה (HOME לא מוגדר).',
     cost: 'עלות',
     tokens: 'טוקנים',
     time: 'זמן',
@@ -867,6 +894,192 @@ async function autoOpen($: EngineInterface, key: string): Promise<void> {
   void $.ui.open({ id: PANE, title: tr().pane })
 }
 
+// --- all agents: every session writes its running agents to a file of its own
+// under the Claude config folder; the all-agents pane reads every fresh one.
+
+let registry: string | null | undefined
+let lastShared = ''
+let lastSharedAt = 0
+
+async function registryDir($: EngineInterface): Promise<string | null> {
+  if (registry !== undefined) return registry
+  const config = await $.env.get('CLAUDE_CONFIG_DIR')
+  const home = await $.env.get('HOME')
+  const base = config || (home ? `${home.replace(/\/+$/, '')}/.claude` : '')
+  registry = base ? `${base.replace(/\/+$/, '')}/savvy-progress/sessions` : null
+  return registry
+}
+
+export const projectOf = (root: string): string => root.replace(/\/+$/, '').split('/').pop() || root
+
+// Writes this session's running agents when they changed, and a heartbeat while any run.
+async function share($: EngineInterface, isEnding = false): Promise<void> {
+  const dir = await registryDir($)
+  if (!dir) return
+  const running = isEnding ? [] : (await read($, agents)).filter(a => a.status === 'running')
+  const sig = JSON.stringify(running.map(a => [a.id, a.tokens, a.stepDone, a.stepTotal, a.stepNote, a.model]))
+  const at = await $.clock.now()
+  const isSame = sig === lastShared
+  if (isSame && (running.length === 0 || at - lastSharedAt < GLOBAL_BEAT)) return
+  lastShared = sig
+  lastSharedAt = at
+  const sessionId = await $.session.id()
+  const root = await $.session.root()
+  const entry: SharedSession = { sessionId, root, project: projectOf(root), updatedAt: at, agents: running }
+  await $.fs.write(`${dir}/${sessionId}.json`, JSON.stringify(entry)).catch(() => {})
+}
+
+// Every session with agents running, fresh within GLOBAL_STALE, grouped by project.
+export const groupSessions = (list: SharedSession[], at: number): [project: string, sessions: SharedSession[]][] => {
+  const live = list.filter(x => x.agents.length > 0 && at - x.updatedAt < GLOBAL_STALE)
+  const byProject = new Map<string, SharedSession[]>()
+  for (const x of live) byProject.set(x.root, [...(byProject.get(x.root) ?? []), x])
+  return [...byProject.entries()]
+    .sort(([a], [b]) => projectOf(a).localeCompare(projectOf(b)) || a.localeCompare(b))
+    .map(([root, sessions]) => [root, sessions.sort((a, b) => a.sessionId.localeCompare(b.sessionId))])
+}
+
+async function gather($: EngineInterface): Promise<void> {
+  const dir = await registryDir($)
+  if (!dir) return
+  const at = await $.clock.now()
+  const entries = await $.fs.list(dir).catch(() => [])
+  const found: SharedSession[] = []
+  for (const f of entries) {
+    if (f.kind !== 'file' || !f.name.endsWith('.json') || at - f.mtimeMs > GLOBAL_STALE) continue
+    try {
+      const x = JSON.parse(String(await $.fs.read(`${dir}/${f.name}`))) as SharedSession
+      if (x && typeof x.root === 'string' && Array.isArray(x.agents)) found.push(x)
+    } catch {
+      // A file mid-write or not ours: skip it this round.
+    }
+  }
+  await update($, everyone, () => found)
+  await update($, now, () => at)
+}
+
+const isGlobalOpen = async ($: EngineInterface): Promise<boolean> => (await $.ui.panes()).some(p => p.id === GLOBAL_PANE)
+
+type TermUi = Pick<Elements['terminal'], 'Box' | 'Text'>
+
+// The terminal rows, shared by the agents pane and the all-agents pane.
+// `ui` is what `$.ui.resolve(e)` returned for this draw.
+const termKit = (ui: TermUi, bodyColumns: number, at: number) => {
+  const s = tr()
+  const { Box, Text } = ui
+  // Terminal: the desktop's layout in text, with a small pixel crab per row.
+  // One column of margin on each side.
+  const cols = Math.max(24, (bodyColumns || 40) - 2)
+  const dir = isRtl() ? ('row-reverse' as const) : ('row' as const)
+  // A pane too narrow for a crab beside its text keeps the text alone.
+  const hasCrabs = cols >= 48
+  const textW = Math.max(16, cols - 1 - (hasCrabs ? TERM_CRAB_COLS + 2 : 0))
+  // Running crabs step their legs in turn with the once-a-second tick.
+  const step: 1 | 2 = Math.floor(at / 1000) % 2 === 0 ? 1 : 2
+  const termCrab = (costume: string, pose: 0 | 1 | 2, dim: boolean) => (
+    <Box flexDirection="column" flexShrink={0}>
+      {crabRows(costume, pose, dim, isRtl()).map((runs, y) => (
+        <Text key={`r${y}`}>
+          {runs.map(([text, fg, bg], i) => (
+            <Text key={`c${i}`} color={fg} backgroundColor={bg}>
+              {text}
+            </Text>
+          ))}
+        </Text>
+      ))}
+    </Box>
+  )
+  const bar = (pct: number, color: string | undefined) => {
+    const filled = Math.round((textW * Math.max(0, Math.min(100, pct))) / 100)
+    return (
+      <Text>
+        <Text color={color} dimColor={!color}>{'━'.repeat(filled)}</Text>
+        <Text color="#3a3a38">{'━'.repeat(textW - filled)}</Text>
+      </Text>
+    )
+  }
+  const rule = <Text color="#3a3a38">{'─'.repeat(cols - 1)}</Text>
+  const withCrab = (key: string, crabEl: JSX.Element, body: JSX.Element) => (
+    <Box key={key} flexDirection="column">
+      {hasCrabs ? (
+        <Box flexDirection={dir} gap={2}>
+          {crabEl}
+          {body}
+        </Box>
+      ) : (
+        body
+      )}
+      {rule}
+    </Box>
+  )
+  const row = (a: AgentRun) => {
+    const tier = tierOf(a.type)
+    const costume = termCostume(a.type, a.model)
+    const color = colorOf(costume)
+    const ctx = ctxOf(a)
+    const progress = a.status === 'done' ? 1 : progressOf(a)
+    const steps = a.stepTotal ? `${a.stepDone ?? 0}/${a.stepTotal}${a.stepNote ? ' · ' + a.stepNote : ''}` : ''
+    const glyphColor = a.status === 'failed' ? 'red' : a.status === 'done' ? 'green' : color
+    const body = (
+      <Box flexDirection="column" flexGrow={1} flexShrink={1} width={textW}>
+        <Box flexDirection={dir} justifyContent="space-between" gap={1}>
+          <Text bold wrap="truncate-end">
+            {a.description || a.type}
+          </Text>
+          <Text color={glyphColor}>{STATUS_GLYPH[a.status]}</Text>
+        </Box>
+        <Text wrap="truncate-end">
+          <Text color={color}>{tier === 'other' ? a.type : tierWord(tier)}</Text>
+          <Text dimColor>
+            {' '}
+            {runModel(a)}
+            {a.round > 1 ? ` · ${s.round} ${a.round}` : ''}
+          </Text>
+        </Text>
+        <Box flexDirection={dir} justifyContent="space-between" gap={2}>
+          <Text wrap="truncate-end">{steps}</Text>
+          <Text dimColor>
+            {s.ctx} {ctx}% · {fmtTokens(a.contextTokens)} ≈{fmtCost(a.costUsd)} {fmtTime(elapsed(a, at))}
+          </Text>
+        </Box>
+        {progress === null ? bar(ctx, undefined) : bar(progress * 100, color)}
+      </Box>
+    )
+    return withCrab(a.id, termCrab(costume, a.status === 'running' ? step : 0, false), body)
+  }
+  const plannedRow = (pl: Planned) => {
+    const tier = pl.tier in TIER_COLOR ? pl.tier : 'other'
+    const body = (
+      <Box flexDirection="column" flexGrow={1} flexShrink={1} width={textW}>
+        <Box flexDirection={dir} justifyContent="space-between" gap={1}>
+          <Text bold dimColor wrap="truncate-end">
+            {pl.n}. {pl.title}
+          </Text>
+          <Text dimColor>◷</Text>
+        </Box>
+        <Text wrap="truncate-end">
+          <Text color={colorOf(tier)}>{tierWord(tier)}</Text>
+          <Text dimColor>
+            {' '}
+            {tierModel(tier)}
+            {pl.after.length ? ` · ${s.after} ${pl.after.join(', ')}` : ''}
+          </Text>
+        </Text>
+      </Box>
+    )
+    return withCrab(`plan-${pl.n}`, termCrab(tier, 0, true), body)
+  }
+  // The three totals as cards, as the desktop draws them.
+  const stat = (label: string, value: string) => (
+    <Box key={label} flexDirection="column" borderStyle="round" borderColor="#3a3a38" paddingX={1} flexGrow={1}>
+      <Text dimColor>{label}</Text>
+      <Text bold>{value}</Text>
+    </Box>
+  )
+
+  return { cols, dir, rule, row, plannedRow, stat }
+}
+
 export const register: Register = (on, options) => {
   on('session.start', async ($, e, next) => {
     const started = await next(e)
@@ -926,9 +1139,18 @@ export const register: Register = (on, options) => {
       description: 'Show or hide the panel of subagents: running, finished and planned, with model, context, cost and time',
     })
 
+    await $.command.register({
+      name: 'agents-all',
+      description: 'Show or hide every running subagent across all Claude Code sessions on this machine, grouped by project',
+    })
+
+    // Every two seconds: refresh the all-agents pane while it is up.
+    let tick = 0
     // Ticks the running agents' clocks; quiet when nothing runs.
     $.clock.every(1000, () => {
       void (async () => {
+        await share($)
+        if (++tick % 2 === 0 && (await isGlobalOpen($))) await gather($)
         const list = await read($, agents)
         if (!list.some(a => a.status === 'running')) return
         const at = await $.clock.now()
@@ -948,6 +1170,25 @@ export const register: Register = (on, options) => {
     }
     const isOpen = await togglePane($)
     return { text: isOpen ? tr().opened : tr().closed }
+  })
+
+  on('command.run', { command: 'agents-all' }, async ($, e) => {
+    if (!(await registryDir($))) return { text: tr().globalOff }
+    const wantsOpen = (e.args ?? '').trim() === 'open'
+    if (!wantsOpen && (await isGlobalOpen($))) {
+      await $.ui.close({ id: GLOBAL_PANE })
+      return { text: tr().globalClosed }
+    }
+    await share($, false)
+    await gather($)
+    await $.ui.open({ id: GLOBAL_PANE, title: tr().global })
+    return { text: tr().globalOpened }
+  })
+
+  // A closed session drops out of every all-agents pane at once, not after GLOBAL_STALE.
+  on('session.end', async ($, e, next) => {
+    await share($, true)
+    return next(e)
   })
 
   on('tool.call', { tool: TOOL }, async ($, e) => {
@@ -1190,116 +1431,7 @@ export const register: Register = (on, options) => {
       )
     }
 
-    // Terminal: the desktop's layout in text, with a small pixel crab per row.
-    // One column of margin on each side.
-    const cols = Math.max(24, (e.props.bodyColumns || 40) - 2)
-    const dir = isRtl() ? 'row-reverse' : 'row'
-    // A pane too narrow for a crab beside its text keeps the text alone.
-    const hasCrabs = cols >= 48
-    const textW = Math.max(16, cols - 1 - (hasCrabs ? TERM_CRAB_COLS + 2 : 0))
-    // Running crabs step their legs in turn with the once-a-second tick.
-    const step: 1 | 2 = Math.floor(at / 1000) % 2 === 0 ? 1 : 2
-    const termCrab = (costume: string, pose: 0 | 1 | 2, dim: boolean) => (
-      <Box flexDirection="column" flexShrink={0}>
-        {crabRows(costume, pose, dim, isRtl()).map((runs, y) => (
-          <Text key={`r${y}`}>
-            {runs.map(([text, fg, bg], i) => (
-              <Text key={`c${i}`} color={fg} backgroundColor={bg}>
-                {text}
-              </Text>
-            ))}
-          </Text>
-        ))}
-      </Box>
-    )
-    const bar = (pct: number, color: string | undefined) => {
-      const filled = Math.round((textW * Math.max(0, Math.min(100, pct))) / 100)
-      return (
-        <Text>
-          <Text color={color} dimColor={!color}>{'━'.repeat(filled)}</Text>
-          <Text color="#3a3a38">{'━'.repeat(textW - filled)}</Text>
-        </Text>
-      )
-    }
-    const rule = <Text color="#3a3a38">{'─'.repeat(cols - 1)}</Text>
-    const withCrab = (key: string, crabEl: JSX.Element, body: JSX.Element) => (
-      <Box key={key} flexDirection="column">
-        {hasCrabs ? (
-          <Box flexDirection={dir} gap={2}>
-            {crabEl}
-            {body}
-          </Box>
-        ) : (
-          body
-        )}
-        {rule}
-      </Box>
-    )
-    const row = (a: AgentRun) => {
-      const tier = tierOf(a.type)
-      const costume = termCostume(a.type, a.model)
-      const color = colorOf(costume)
-      const ctx = ctxOf(a)
-      const progress = a.status === 'done' ? 1 : progressOf(a)
-      const steps = a.stepTotal ? `${a.stepDone ?? 0}/${a.stepTotal}${a.stepNote ? ' · ' + a.stepNote : ''}` : ''
-      const glyphColor = a.status === 'failed' ? 'red' : a.status === 'done' ? 'green' : color
-      const body = (
-        <Box flexDirection="column" flexGrow={1} flexShrink={1} width={textW}>
-          <Box flexDirection={dir} justifyContent="space-between" gap={1}>
-            <Text bold wrap="truncate-end">
-              {a.description || a.type}
-            </Text>
-            <Text color={glyphColor}>{STATUS_GLYPH[a.status]}</Text>
-          </Box>
-          <Text wrap="truncate-end">
-            <Text color={color}>{tier === 'other' ? a.type : tierWord(tier)}</Text>
-            <Text dimColor>
-              {' '}
-              {runModel(a)}
-              {a.round > 1 ? ` · ${s.round} ${a.round}` : ''}
-            </Text>
-          </Text>
-          <Box flexDirection={dir} justifyContent="space-between" gap={2}>
-            <Text wrap="truncate-end">{steps}</Text>
-            <Text dimColor>
-              {s.ctx} {ctx}% · {fmtTokens(a.contextTokens)} ≈{fmtCost(a.costUsd)} {fmtTime(elapsed(a, at))}
-            </Text>
-          </Box>
-          {progress === null ? bar(ctx, undefined) : bar(progress * 100, color)}
-        </Box>
-      )
-      return withCrab(a.id, termCrab(costume, a.status === 'running' ? step : 0, false), body)
-    }
-    const plannedRow = (pl: Planned) => {
-      const tier = pl.tier in TIER_COLOR ? pl.tier : 'other'
-      const body = (
-        <Box flexDirection="column" flexGrow={1} flexShrink={1} width={textW}>
-          <Box flexDirection={dir} justifyContent="space-between" gap={1}>
-            <Text bold dimColor wrap="truncate-end">
-              {pl.n}. {pl.title}
-            </Text>
-            <Text dimColor>◷</Text>
-          </Box>
-          <Text wrap="truncate-end">
-            <Text color={colorOf(tier)}>{tierWord(tier)}</Text>
-            <Text dimColor>
-              {' '}
-              {tierModel(tier)}
-              {pl.after.length ? ` · ${s.after} ${pl.after.join(', ')}` : ''}
-            </Text>
-          </Text>
-        </Box>
-      )
-      return withCrab(`plan-${pl.n}`, termCrab(tier, 0, true), body)
-    }
-    // The three totals as cards, as the desktop draws them.
-    const stat = (label: string, value: string) => (
-      <Box key={label} flexDirection="column" borderStyle="round" borderColor="#3a3a38" paddingX={1} flexGrow={1}>
-        <Text dimColor>{label}</Text>
-        <Text bold>{value}</Text>
-      </Box>
-    )
-
+    const { cols, dir, row, plannedRow, stat } = termKit(ui, e.props.bodyColumns, at)
     return (
       <Box flexDirection="column" paddingX={1}>
         <Box flexDirection={dir} justifyContent="space-between">
@@ -1337,6 +1469,64 @@ export const register: Register = (on, options) => {
             {planned.map(plannedRow)}
           </Box>
         )}
+      </Box>
+    )
+  })
+
+  on('ui.render', { component: 'Pane', requestId: GLOBAL_PANE }, async ($, e) => {
+    const s = tr()
+    const ui = $.ui.resolve(e)
+    const { Box, Text } = ui
+    const list = await read($, everyone)
+    const at = Math.max(await read($, now), 0)
+    const groups = groupSessions(list, at)
+    const all = groups.flatMap(([, sessions]) => sessions.flatMap(x => x.agents))
+    const t = totals(all, at)
+    const { cols, dir, row, stat } = termKit(ui, e.props.bodyColumns, at)
+    const sessionCount = groups.reduce((n, [, sessions]) => n + sessions.length, 0)
+
+    return (
+      <Box flexDirection="column" paddingX={1}>
+        <Box flexDirection={dir} justifyContent="space-between">
+          <Text bold>{s.global}</Text>
+          <Text dimColor>
+            {groups.length} {s.projects.toLowerCase()} · {sessionCount} {s.sessionsWord}
+          </Text>
+        </Box>
+        <Box flexDirection={dir} gap={1}>
+          {stat(s.running, String(all.length))}
+          {stat(s.cost, `≈${fmtCost(t.cost)}`)}
+          {stat(s.tokens, fmtTokens(t.tokens))}
+        </Box>
+        {groups.length === 0 && (
+          <Box marginTop={1}>
+            <Text dimColor>{s.globalEmpty}</Text>
+          </Box>
+        )}
+        {groups.map(([root, sessions]) => (
+          <Box key={root} flexDirection="column" marginTop={1}>
+            <Text wrap="truncate-end">
+              <Text bold color={ACCENT}>
+                {projectOf(root)}
+              </Text>
+              <Text dimColor>
+                {'  '}
+                {root.length + projectOf(root).length + 4 < cols ? root : ''}
+              </Text>
+            </Text>
+            {sessions.map(x => (
+              <Box key={x.sessionId} flexDirection="column">
+                {sessions.length > 1 && (
+                  <Text dimColor>
+                    {'  '}
+                    {x.sessionId.slice(0, 8)} · {x.agents.length} {s.agentsCount}
+                  </Text>
+                )}
+                {[...x.agents].sort((a, b) => b.startedAt - a.startedAt).map(a => row({ ...a, id: `${x.sessionId}:${a.id}` }))}
+              </Box>
+            ))}
+          </Box>
+        ))}
       </Box>
     )
   })

@@ -46,6 +46,15 @@ export type Panel = {
   autoOpenedFor: string
 }
 
+/** One session's running agents, as it publishes them for the all-agents pane. */
+export type SharedSession = {
+  sessionId: string
+  root: string
+  project: string
+  updatedAt: number
+  agents: AgentRun[]
+}
+
 declare module 'claude-code' {
   interface PluginState {
     'savvy-progress': {
@@ -53,6 +62,7 @@ declare module 'claude-code' {
       agents: AgentRun[]
       panel: Panel
       now: number
+      everyone: SharedSession[]
     }
   }
 }
