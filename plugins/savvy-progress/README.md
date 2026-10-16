@@ -3,6 +3,7 @@
 A Claude Code mod: a progress bar above the prompt and a live panel of subagents. Made for the [savvy-flow](../savvy-flow) skill, and useful with any subagents.
 
 - **Progress bar**: the flow's title, phase, accepted tasks out of planned, and a button with the crew size that opens the panel. It appears once something reports progress (savvy-flow does) or a `savvy-*` worker starts.
+- **Terminal crabs** (this fork): in the terminal the panel follows the desktop layout, with Cost, Tokens and Time cards, a full-width bar in each agent's color and a small hand-drawn pixel crab (8 columns by 3 rows, half blocks) per agent. Agents that are not savvy workers still dress apart: Explore is the pirate, Plan the engineer, and the rest go by model (Fable astronaut, Opus detective, Sonnet chef, Haiku racer). Running crabs step their legs once a second. A pane under 48 columns keeps the text alone.
 - **Agents panel** (`/agents-info` toggles it; `/agents-info open` opens it or brings it forward without toggling): running, finished and planned subagents with model, effort, task progress, context, estimated cost and time. Working crabs walk, and each savvy tier animates its prop: the astronaut floats, the detective sweeps the magnifier, the engineer turns the wrench, the chef tosses the omelette, the racer runs with a fluttering flag. `prefers-reduced-motion` stops them.
 
 ## Tools it adds

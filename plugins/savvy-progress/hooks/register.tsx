@@ -661,6 +661,87 @@ const crabWidth = (scale: number): number => Math.round(CRAB_BOX * scale * 100) 
 const rowCrab = (W: number, x: number, y: number, costume: string, dim = false, isWalking = false): string =>
   crab(mx(W, x, crabWidth(CRAB_SCALE)), y, costume, dim, isWalking, CRAB_SCALE, isRtl())
 
+// --- terminal crabs: small hand-drawn sprites, 8 pixels wide and 6 tall, two
+// pixels per cell with the half blocks, so a crab is 8 columns by 3 rows.
+
+export const TERM_CRAB_COLS = 8
+
+// Rows 0-1 are the costume's hat, 2-4 the body, 5 the legs (two walking frames).
+const MINI_BODY = ['.CKCCKC.', 'CCCCCCCC', '.CCCCCC.']
+const MINI_LEGS = ['.C.C.C.C', 'C.C.C.C.']
+
+// Each costume: its hat rows, then single pixels laid over the crab as [x, y, key].
+const MINI: Record<string, { hat: string[]; dots?: [number, number, string][]; map: Record<string, string> }> = {
+  other: { hat: ['........', '........'], map: {} },
+  // Astronaut: a glass dome with an antenna in the tier's color and a star beside it.
+  fable: { hat: ['...tt..s', '.GGGGGG.'], dots: [[0, 2, 'G'], [7, 2, 'G']], map: { G: '#E6E8EE', s: '#F5C542' } },
+  // Detective: a deerstalker and a magnifier in the raised claw.
+  heavy: { hat: ['..BbbB.o', '.DDDDDDo'], dots: [[7, 2, 'h']], map: { B: '#7A4A26', b: '#A0703F', D: '#5A3519', o: '#3A3A3C', h: '#7A4A26' } },
+  // Engineer: a hard hat and a wrench.
+  careful: { hat: ['..YhhY..', '.dYYYYd.'], dots: [[0, 1, 'w'], [0, 2, 'w']], map: { Y: '#F5C542', h: '#FBE08A', d: '#C99A1E', w: '#8E929A' } },
+  // Chef: a toque with a band in the tier's color, and a pan with the omelette.
+  medium: { hat: ['..WWWW..', '..tttt.e'], dots: [[7, 2, 'p']], map: { W: '#F4F3EE', e: '#F5B731', p: '#4A4A48' } },
+  // Racer: a helmet in the tier's color and a checkered flag.
+  light: { hat: ['..tttt.w', '.ttWWtt|'], dots: [[7, 2, '|']], map: { w: '#F8F6F1', '|': '#8E929A' } },
+  // Pirate: a tricorn with a gold band, an eye patch and a cutlass.
+  explore: { hat: ['.KKKKKKc', '..gggg.c'], dots: [[4, 2, 'K'], [7, 2, 'h']], map: { K: '#55514C', g: '#F5C542', c: '#C9CCD2', h: '#7A4A26' } },
+}
+
+// A finished crab fades halfway toward grey.
+const fade = (c: string): string =>
+  '#' + [1, 3, 5].map(i => Math.round((parseInt(c.slice(i, i + 2), 16) + 0x88) / 2).toString(16).padStart(2, '0')).join('')
+
+// `step` 0 stands, 1 and 2 are the two walking frames.
+export const crabPixels = (costume: string, step: 0 | 1 | 2): (string | null)[][] => {
+  const look = MINI[costume] ?? MINI.other!
+  const map: Record<string, string> = { C: CLAY, K: INK, t: colorOf(costume), ...look.map }
+  const rows = [...look.hat, ...MINI_BODY, MINI_LEGS[step === 2 ? 1 : 0]!]
+  const px = rows.map(r => [...r].map(ch => map[ch] ?? null))
+  for (const [x, y, k] of look.dots ?? []) {
+    const r = px[y]
+    if (r) r[x] = map[k] ?? null
+  }
+  return px
+}
+
+// One text row per two pixel rows: runs of the same colors, as [text, fg, bg].
+export const crabRows = (costume: string, step: 0 | 1 | 2, dim: boolean, mirror: boolean): [string, string?, string?][][] => {
+  const px = crabPixels(costume, step)
+  const rows: [string, string?, string?][][] = []
+  for (let y = 0; y < px.length; y += 2) {
+    const top = px[y] ?? []
+    const bottom = px[y + 1] ?? []
+    const runs: [string, string?, string?][] = []
+    for (let i = 0; i < top.length; i++) {
+      const x = mirror ? top.length - 1 - i : i
+      let t = top[x] ?? undefined
+      let b = bottom[x] ?? undefined
+      if (dim) [t, b] = [t && fade(t), b && fade(b)]
+      // Only the lower pixel: draw the lower half block in its color.
+      const cell: [string, string?, string?] = !t && !b ? [' '] : !t ? ['▄', b] : ['▀', t, b]
+      const last = runs[runs.length - 1]
+      if (last && last[1] === cell[1] && last[2] === cell[2] && last[0].slice(-1) === cell[0]) last[0] += cell[0]
+      else runs.push(cell)
+    }
+    rows.push(runs)
+  }
+  return rows
+}
+
+// A crab for an agent that is not a savvy worker: Explore is the pirate, Plan the
+// engineer, the rest dress by model, so a mixed crew does not look alike.
+export const termCostume = (type: string, model: string): string => {
+  const c = costumeOf(type)
+  if (c !== 'other') return c
+  if (type === 'Plan') return 'careful'
+  const m = model.toLowerCase()
+  if (m.includes('fable')) return 'fable'
+  if (m.includes('opus')) return 'heavy'
+  if (m.includes('sonnet')) return 'medium'
+  if (m.includes('haiku')) return 'light'
+  return 'other'
+}
+
 const svg = (W: number, H: number, body: string): string =>
   `<svg xmlns="http://www.w3.org/2000/svg" width="${W}" height="${H}" viewBox="0 0 ${W} ${H}">${PANE_CSS}${CRAB_CSS}${body}</svg>`
 
@@ -762,11 +843,6 @@ const compactSvg = (W: number, list: AgentRun[], planned: Planned[], t: ReturnTy
 }
 
 // --- terminal drawing: the same rows in text.
-
-const ctxBar = (pct: number, width: number): string => {
-  const filled = Math.round((width * pct) / 100)
-  return '█'.repeat(filled) + '░'.repeat(Math.max(0, width - filled))
-}
 
 const STATUS_GLYPH: Record<string, string> = { running: '●', done: '✓', failed: '✗', planned: '◷' }
 
@@ -1113,57 +1189,133 @@ export const register: Register = (on, options) => {
       )
     }
 
-    // Terminal: the same content in text rows.
-    const cols = Math.max(24, e.props.bodyColumns || 40)
-    const barW = Math.max(6, Math.min(20, cols - 34))
+    // Terminal: the desktop's layout in text, with a small pixel crab per row.
+    // One column of margin on each side.
+    const cols = Math.max(24, (e.props.bodyColumns || 40) - 2)
+    const dir = isRtl() ? 'row-reverse' : 'row'
+    // A pane too narrow for a crab beside its text keeps the text alone.
+    const hasCrabs = cols >= 48
+    const textW = Math.max(16, cols - 1 - (hasCrabs ? TERM_CRAB_COLS + 2 : 0))
+    // Running crabs step their legs in turn with the once-a-second tick.
+    const step: 1 | 2 = Math.floor(at / 1000) % 2 === 0 ? 1 : 2
+    const termCrab = (costume: string, pose: 0 | 1 | 2, dim: boolean) => (
+      <Box flexDirection="column" flexShrink={0}>
+        {crabRows(costume, pose, dim, isRtl()).map((runs, y) => (
+          <Text key={`r${y}`}>
+            {runs.map(([text, fg, bg], i) => (
+              <Text key={`c${i}`} color={fg} backgroundColor={bg}>
+                {text}
+              </Text>
+            ))}
+          </Text>
+        ))}
+      </Box>
+    )
+    const bar = (pct: number, color: string | undefined) => {
+      const filled = Math.round((textW * Math.max(0, Math.min(100, pct))) / 100)
+      return (
+        <Text>
+          <Text color={color} dimColor={!color}>{'━'.repeat(filled)}</Text>
+          <Text color="#3a3a38">{'━'.repeat(textW - filled)}</Text>
+        </Text>
+      )
+    }
+    const rule = <Text color="#3a3a38">{'─'.repeat(cols - 1)}</Text>
+    const withCrab = (key: string, crabEl: JSX.Element, body: JSX.Element) => (
+      <Box key={key} flexDirection="column">
+        {hasCrabs ? (
+          <Box flexDirection={dir} gap={2}>
+            {crabEl}
+            {body}
+          </Box>
+        ) : (
+          body
+        )}
+        {rule}
+      </Box>
+    )
     const row = (a: AgentRun) => {
       const tier = tierOf(a.type)
-      const color = colorOf(tier)
+      const costume = termCostume(a.type, a.model)
+      const color = colorOf(costume)
       const ctx = ctxOf(a)
-      const progress = progressOf(a)
-      const model = runModel(a)
-      const steps = a.stepTotal ? `${a.stepDone ?? 0}/${a.stepTotal}${a.stepNote ? ' ' + a.stepNote : ''} · ` : ''
-      return (
-        <Box key={a.id} flexDirection="column" marginBottom={1}>
-          <Box flexDirection="row" gap={1}>
-            <Text color={color}>▣</Text>
+      const progress = a.status === 'done' ? 1 : progressOf(a)
+      const steps = a.stepTotal ? `${a.stepDone ?? 0}/${a.stepTotal}${a.stepNote ? ' · ' + a.stepNote : ''}` : ''
+      const glyphColor = a.status === 'failed' ? 'red' : a.status === 'done' ? 'green' : color
+      const body = (
+        <Box flexDirection="column" flexGrow={1} flexShrink={1} width={textW}>
+          <Box flexDirection={dir} justifyContent="space-between" gap={1}>
             <Text bold wrap="truncate-end">
               {a.description || a.type}
             </Text>
-            <Text color={a.status === 'failed' ? 'red' : a.status === 'done' ? 'green' : color}>{STATUS_GLYPH[a.status]}</Text>
+            <Text color={glyphColor}>{STATUS_GLYPH[a.status]}</Text>
           </Box>
-          <Text dimColor wrap="truncate-end">
-            {'  '}
-            {tier === 'other' ? a.type : tierWord(tier)} · {model}
-            {a.round > 1 ? ` · ${s.round} ${a.round}` : ''}
-          </Text>
           <Text wrap="truncate-end">
-            {'  '}
-            {progress === null ? <Text dimColor>{ctxBar(ctx, barW)}</Text> : <Text color={color}>{ctxBar(progress * 100, barW)}</Text>}
+            <Text color={color}>{tier === 'other' ? a.type : tierWord(tier)}</Text>
             <Text dimColor>
               {' '}
-              {steps}{s.ctx} {ctx}% · {fmtTokens(a.contextTokens)} ≈{fmtCost(a.costUsd)} {fmtTime(elapsed(a, at))}
+              {runModel(a)}
+              {a.round > 1 ? ` · ${s.round} ${a.round}` : ''}
+            </Text>
+          </Text>
+          <Box flexDirection={dir} justifyContent="space-between" gap={2}>
+            <Text wrap="truncate-end">{steps}</Text>
+            <Text dimColor>
+              {s.ctx} {ctx}% · {fmtTokens(a.contextTokens)} ≈{fmtCost(a.costUsd)} {fmtTime(elapsed(a, at))}
+            </Text>
+          </Box>
+          {progress === null ? bar(ctx, undefined) : bar(progress * 100, color)}
+        </Box>
+      )
+      return withCrab(a.id, termCrab(costume, a.status === 'running' ? step : 0, false), body)
+    }
+    const plannedRow = (pl: Planned) => {
+      const tier = pl.tier in TIER_COLOR ? pl.tier : 'other'
+      const body = (
+        <Box flexDirection="column" flexGrow={1} flexShrink={1} width={textW}>
+          <Box flexDirection={dir} justifyContent="space-between" gap={1}>
+            <Text bold dimColor wrap="truncate-end">
+              {pl.n}. {pl.title}
+            </Text>
+            <Text dimColor>◷</Text>
+          </Box>
+          <Text wrap="truncate-end">
+            <Text color={colorOf(tier)}>{tierWord(tier)}</Text>
+            <Text dimColor>
+              {' '}
+              {tierModel(tier)}
+              {pl.after.length ? ` · ${s.after} ${pl.after.join(', ')}` : ''}
             </Text>
           </Text>
         </Box>
       )
+      return withCrab(`plan-${pl.n}`, termCrab(tier, 0, true), body)
     }
+    // The three totals as cards, as the desktop draws them.
+    const stat = (label: string, value: string) => (
+      <Box key={label} flexDirection="column" borderStyle="round" borderColor="#3a3a38" paddingX={1} flexGrow={1}>
+        <Text dimColor>{label}</Text>
+        <Text bold>{value}</Text>
+      </Box>
+    )
 
     return (
-      <Box flexDirection="column">
-        <Box flexDirection="row" justifyContent="space-between">
+      <Box flexDirection="column" paddingX={1}>
+        <Box flexDirection={dir} justifyContent="space-between">
           <Text bold wrap="truncate-end">
-            {title}
+            {title || s.pane}
           </Text>
           {toggleCompact}
         </Box>
-        <Text dimColor>
-          ≈{fmtCost(t.cost)} · {fmtTokens(t.tokens)} {s.tokensWord} · {fmtTime(t.time)}
-        </Text>
+        <Box flexDirection={dir} gap={1}>
+          {stat(s.cost, `≈${fmtCost(t.cost)}`)}
+          {stat(s.tokens, fmtTokens(t.tokens))}
+          {stat(s.time, fmtTime(t.time))}
+        </Box>
         {p.isCompact ? (
           <Text wrap="truncate-end">
             {[...running, ...finished].map(a => (
-              <Text key={a.id} color={colorOf(tierOf(a.type))}>
+              <Text key={a.id} color={colorOf(termCostume(a.type, a.model))}>
                 {STATUS_GLYPH[a.status]}{' '}
               </Text>
             ))}
@@ -1181,21 +1333,7 @@ export const register: Register = (on, options) => {
             {finished.length > 0 && toggleDone}
             {!p.isDoneCollapsed && finished.map(row)}
             {planned.length > 0 && <Text dimColor>{s.planned} · {planned.length}</Text>}
-            {planned.map(pl => {
-              const tier = pl.tier in TIER_COLOR ? pl.tier : 'other'
-              return (
-                <Box key={`plan-${pl.n}`} flexDirection="column" marginBottom={1}>
-                  <Text dimColor wrap="truncate-end">
-                    <Text color={colorOf(tier)}>▢</Text> {pl.n}. {pl.title} ◷
-                  </Text>
-                  <Text dimColor wrap="truncate-end">
-                    {'  '}
-                    {tierWord(tier)} · {tierModel(tier)}
-                    {pl.after.length ? ` · ${s.after} ${pl.after.join(', ')}` : ''}
-                  </Text>
-                </Box>
-              )
-            })}
+            {planned.map(plannedRow)}
           </Box>
         )}
       </Box>

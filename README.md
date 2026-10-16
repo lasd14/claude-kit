@@ -1,4 +1,7 @@
-# claude-kit
+# claude-kit (lasd14's fork)
+
+A fork of [johnnyvizz/claude-kit](https://github.com/johnnyvizz/claude-kit). The one change is in **savvy-progress**: the agents panel draws its pixel crabs in the terminal too (Warp, iTerm, Ghostty...), not only in the desktop app, with a layout that follows the desktop panel. Everything else is upstream as is; all credit for the original work goes to johnnyvizz.
+
 
 My public skills and mods for [Claude Code](https://claude.com/claude-code), in one place. Every item is a standalone plugin under `plugins/`: install only what you need.
 
@@ -17,9 +20,9 @@ savvy-flow and savvy-progress work on their own and light up together: with both
 In Claude Code:
 
 ```
-/plugin marketplace add johnnyvizz/claude-kit
-/plugin install savvy-flow@claude-kit
-/plugin install savvy-progress@claude-kit
+/plugin marketplace add lasd14/claude-kit
+/plugin install savvy-flow@lasd14-claude-kit
+/plugin install savvy-progress@lasd14-claude-kit
 ```
 
 Restart the session afterwards. Plugin skills and agents are namespaced: the skill is `/savvy-flow:savvy-flow`, the agents `savvy-flow:savvy-careful` and so on.
@@ -27,7 +30,7 @@ Restart the session afterwards. Plugin skills and agents are namespaced: the ski
 ### By hand
 
 ```bash
-git clone https://github.com/johnnyvizz/claude-kit.git ~/claude-kit
+git clone https://github.com/lasd14/claude-kit.git ~/claude-kit
 ```
 
 **A skill** (no plugin system involved, names stay short: `/savvy-flow`, `savvy-careful`): copy its folders into your Claude Code config.
