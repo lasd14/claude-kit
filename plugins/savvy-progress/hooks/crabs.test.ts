@@ -2,7 +2,7 @@ import type { On } from 'claude-code'
 import { expect, mock, test } from 'claude-code/testing'
 import type { Engine } from 'claude-code/testing'
 
-import { crabRows, termCostume } from './register'
+import { crabRows, termCostume, totals } from './register'
 
 const PLUGIN = 'savvy-progress'
 const pane = (bodyColumns: number) =>
@@ -50,4 +50,13 @@ test('agents that are not savvy workers still get different costumes', async () 
   expect(termCostume('general-purpose', 'claude-sonnet-5-5')).toBe('medium')
   expect(termCostume('general-purpose', 'claude-opus-5-5')).toBe('heavy')
   expect(termCostume('savvy-careful', 'claude-opus-5-5')).toBe('careful')
+})
+
+test('total time adds up each agent run, not the span from the first to now', async () => {
+  const run = (startedAt: number, endedAt?: number) => ({ startedAt, endedAt, costUsd: 0, tokens: 0 }) as never
+  const hour = 3_600_000
+  // Two finished runs of 1 and 2 minutes, an hour apart, and one running for 30 s.
+  const at = 2 * hour + 30_000
+  expect(totals([run(0, 60_000), run(hour, hour + 120_000), run(2 * hour)], at).time).toBe(60_000 + 120_000 + 30_000)
+  expect(totals([], at).time).toBe(0)
 })

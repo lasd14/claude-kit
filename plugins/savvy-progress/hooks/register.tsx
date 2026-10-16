@@ -477,12 +477,13 @@ const plannedOf = (f: Flow | null, list: AgentRun[]): Planned[] => {
   return (f.tasks ?? []).map((t, i) => ({ ...t, n: i + 1 })).filter(t => !started.has(norm(t.title)))
 }
 
-const totals = (list: AgentRun[], at: number) => {
+export const totals = (list: AgentRun[], at: number) => {
   const cost = list.reduce((s, a) => s + a.costUsd, 0)
   const tokens = list.reduce((s, a) => s + a.tokens, 0)
-  const start = Math.min(...list.map(a => a.startedAt))
-  const end = Math.max(...list.map(a => a.endedAt ?? Math.max(at, a.startedAt)))
-  return { cost, tokens, time: list.length ? end - start : 0 }
+  // Time worked: each agent's own run added up, so a gap between agents (or a
+  // session left open overnight) does not count.
+  const time = list.reduce((s, a) => s + elapsed(a, at), 0)
+  return { cost, tokens, time }
 }
 
 // --- desktop drawings: each row is one SVG, as the band above the prompt is.
